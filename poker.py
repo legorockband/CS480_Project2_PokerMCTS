@@ -1,5 +1,6 @@
 import random 
 import math
+from itertools import combinations
 
 class Card:
     def __init__(self, suit, value):
@@ -33,200 +34,197 @@ class Deck:
     def shuffle(self):
         random.shuffle(self.cards)
 
-    def deal_card(self):
-        if not self.cards:
-            return None  
-        return self.cards.pop()
+    def deal_card(self, n):
+        dealt = self.cards[:n]
+        self.cards = self.cards[n:]
+        return dealt
 
     def sample(self, k):
         return random.sample(self.cards, k)
 
-class Poker:
-    def __init__(self, my_hand:list[Card, Card], opp_hand:list[Card, Card], turn = 0, max_turns = 1):
-        self.my_hand = my_hand or []
-        self.opp_hand = opp_hand or []
-        self.turn = turn
-        self.max_turns = max_turns
+class Node:
+    def __init__(self, my_hand, opp_hand=[], board=[], deck=None, level=0, parent=None):
+        self.my_hand = my_hand
+        self.opp_hand = opp_hand
+        self.board = board
+        self.deck = deck or Deck()
+        self.deck.remove(my_hand + opp_hand + board)
+        self.level = level
+        self.parent = parent
+        self.children = []
+        self.visits = 0
+        self.wins = 0
+        self.sampled = set()
 
-    def get_legal_actions(self):
-        return ['check']
-
-    def perform_action(self,action):
-        return Poker(
-            self.my_hand,
-            self.opp_hand,
-            turn=self.turn + 1,
-            max_turns=self.max_turns
-        )
-    
+    # Only 5 levels in poker (You get cards, Opponent gets some cards, Flop, Turn, and River)
     def is_terminal(self):
-        return self.turn >= self.max_turns
+        return self.level == 4
+
+    def ucb1(self, child):
+        if child.visits == 0:
+            return float('inf')     # Encourage exploration 
+        c = math.sqrt(2)    
+        exploit = child.wins / child.visited    ## wi / ni
+        explore = c * math.sqrt(math.log(self.visits) / child.visits)
+        return exploit + explore
+
+    def selection(self):
+        return max(self.children, key=self.ucb1)
+
+    def expand(self):
+        full_deck = Deck()
+        known_cards = self.my_hand + self.opp_hand + self.board
+        full_deck.remove(known_cards)
+
+        try:
+            # Opponent gets 2 cards 
+            if self.level == 0:
+                if len(full_deck.cards) < 2:
+                    return None
+                new_opp = tuple(full_deck.sample(2))       
+                if new_opp in self.sampled:
+                    return self.expand()
+                self.sampled.add(new_opp)
+                return Node(self.my_hand, list(new_opp), [], None, 1, self)
+
+            # Flop (3 cards on the table)
+            elif self.level == 1:
+                if len(full_deck.cards) < 3:
+                    return None
+                flop = tuple(full_deck.sample(3))           
+                if flop in self.sampled:
+                    return self.expand()
+                self.sampled.add(flop)
+                return Node(self.my_hand, self.opp_hand, list(flop), None, 2, self)
+
+            # Turn (1 new card on table)
+            elif self.level == 2:
+                if len(full_deck.cards) < 1:
+                    return None
+                turn = tuple(full_deck.sample(1))
+                if turn in self.sampled:
+                    return self.expand()
+                self.sampled.add(turn)
+                return Node(self.my_hand, self.opp_hand, self.board + list(turn), None, 3, self)
+
+            # River (1 final card on the table)
+            elif self.level == 3:
+                if len(full_deck.cards) < 1:
+                    return None
+                river = tuple(full_deck.sample(1))
+                if river in self.sampled:
+                    return self.expand()
+                self.sampled.add(river)
+                return Node(self.my_hand, self.opp_hand, self.board + list(river), None, 4, self)
+
+        except ValueError:
+            return None
     
-    def get_result(self):
-        if self.my_hand > self.opp_hand:
+    def rollout(self):
+        # Clone deck to avoid altering the real one
+        temp_deck = Deck()
+        temp_deck.remove(self.my_hand + self.opp_hand + self.board)
+
+        # Complete the board to 5 cards
+        completed_board = self.board[:]
+        needed = 5 - len(completed_board)
+        completed_board += temp_deck.sample(needed)
+
+        # Get the score for my hand vs opponents potential hand
+        my_score = hand_eval(self.my_hand + completed_board)
+        opp_score = hand_eval(self.opp_hand + completed_board)
+
+        # Determine a clear winner at the final stage
+        if my_score > opp_score:
             return 1
-        elif self.my_hand < self.opp_hand:
+        elif my_score < opp_score:
             return 0
         else:
             return 0.5
-    
-    def clone(self):
-        return Poker(self.my_hand, self.opp_hand, self.turn, self.max_turns)
-
-class Node:
-    def __init__(self, state, parent=None, action=None):
-        self.state = state
-        self.parent = parent
-        self.action = action
-        self.children = []
-        self.visited = 0
-        self.wins = 0
-        self.remain_actions = state.get_legal_actions()
-
-    def full_expaned(self):
-        return len(self.remain_actions) == 0
-
-    def is_terminal(self):
-        return self.state.is_terminal()
-
-    def selection(self, c=math.sqrt(2)):
-        def ucb1(child):
-            if child.visited == 0:
-                return float('inf')
-            
-            exploit = child.wins / child.visited    ## wi / ni
-            explore = c * math.sqrt(math.log(self.visited) / child.visted)
-            return exploit + explore
-
-        return max(self.children, key=ucb1)
-
-    def expand(self):
-        action = self.remain_actions.pop()
-        next_state = self.state.perform_action(action)
-        child_node = Node(next_state, parent=self, action=action)
-        self.children.append(child_node)
-        return child_node
-    
-    def rollout(self):
-        current_state = self.state.clone()
-        while not current_state.is_terminal():
-            legal_actions = current_state.get_legal_actions()
-            action = random.choice(legal_actions)
-            current_state = current_state.perform_action(action)
-        return current_state.get_result()
 
     def backpropagate(self, reward):
-        self.visited += 1
+        # Send whether the terminal value to all previous parents and root
+        self.visits += 1
         self.wins += reward
         if self.parent:
             self.parent.backpropagate(reward)
 
+def hand_eval(cards):
+    assert len(cards) >= 5
+    best = max((hand_strength(list(combo)) for combo in combinations(cards, 5)  ))
+    return best
+
 def hand_strength(cards: list[Card]):
-    ranks = [card.rank for card in cards]       ## Get the ranks for your cards and the table cards
-    suits = [card.suit for card in cards]       ## Get the suits for your cards and the table cards
+    ranks = sorted([card.rank for card in cards], reverse=True)             # Get the ranks for your cards and the table cards
+    suits = [card.suit for card in cards]                                   # Get the suits for your cards and the table cards
 
-    rank_count = {}
-    for r in ranks:
-        if r in rank_count:
-            rank_count[r] += 1
-        else:
-            rank_count[r] = 1
+    rank_count = {r: ranks.count(r) for r in set(ranks)}                    # Input: {A, A, 3, 4, 4} -> {14: 2, 4: 2, 3: 1}
+    rank_groups = sorted(rank_count.items(), key=lambda x: (-x[1], -x[0]))  # Input: {14: 2, 4: 2, 3: 1} -> [(14, 2), (4, 2), (3, 1)]
+    counts = [count for rank, count in rank_groups]                         # Get Frequency of values Input: [(14, 2), (4, 2), (3, 1)] -> [2, 2, 1] (Two Pairs and Another card)
+    unique_ranks = [rank for rank, count in rank_groups]                    # Used to break ties for better hands (Ace pair > 4 pair)
     
-    suit_count = {}
-    for s in suits:
-        if s in suit_count:
-            suit_count[s] += 1
-        else:
-            suit_count[s] = 1
-    
-    is_royal = sorted(rank_count) == {10, 11, 12, 13, 14}   ## 10, J, Q, K, A
-    is_flush = any(count >= 5 for count in suit_count.values())
-    is_straight = has_straight(ranks)
-
-    counts = list(rank_count.values())
-    is_four = 4 in counts
-    is_three = 3 in counts
-    pair_total = counts.count(2)
+    is_royal = set([10, 11, 12, 13, 14]).issubset(set(ranks))               # Are the royal ranks on the table and in your hand  
+    is_flush = len(set(suits)) == 1
+    is_straight, straight_strength = has_straight(ranks)
 
     if is_flush and is_straight and is_royal:
-        return 9    # Royal Flush
-    elif is_flush and is_straight:
-        return 8    # Straight Flush
-    elif is_four:
-        return 7    # Four of a Kind
-    elif is_three and pair_total >= 1:
-        return 6    # Full House
-    elif is_flush:
-        return 5    # Flush
-    elif is_straight:
-        return 4    # Straight
-    elif is_three:
-        return 3    # Three of a Kind
-    elif pair_total >= 2:
-        return 2    # Two Pair
-    elif pair_total == 1:
-        return 1    # Pair
-    else:
-        return 0    # High Card
+        return 9                                                            # Royal Flush
+    if is_flush and is_straight:
+        return (8, straight_strength)                                       # Straight Flush
+    if counts == [4, 1]:
+        return (7, unique_ranks[0], unique_ranks[1])                        # Four of a Kind
+    if counts == [3, 2]:
+        return (6, unique_ranks[0], unique_ranks[1])                        # Full House
+    if is_flush:
+        return (5, *ranks)                                                  # Flush
+    if is_straight:
+        return (4, straight_strength)                                       # Straight
+    if counts == [3, 1, 1]:
+        return (3, unique_ranks[0], unique_ranks[1], unique_ranks[2])       # Three of a kind
+    if counts == [2, 2, 1]:
+        return (2, unique_ranks[0], unique_ranks[1], unique_ranks[2])       # Two Pair
+    if counts == [2, 1, 1, 1]:
+        return (1, unique_ranks[0], unique_ranks[1], unique_ranks[2], unique_ranks[3])  # Pair
+    
+    return (0, *ranks)                                                      # High Card
 
 def has_straight(ranks):
-    ## Sort the card ranks from low to high
+    # Sort the card ranks from low to high
     ranks = sorted(set(ranks))
 
-    ## Ace Low straight
+    # Ace Low straight
     if {14, 2, 3, 4, 5}.issubset(ranks):
-        return True
+        return True, 5
     
     for i in range(len(ranks) - 4):
-        if ranks[i + 4] - ranks[i] == 4:
-            return True
-    return False
+        if ranks[i + 4] - ranks[i] == 4:    # Is the difference between the 5 cards 4? 
+            return True, ranks[i]
+    return False, None
 
 def mcts(my_hand, num_simulations = 1000):
-    win_count = 0
+    root = Node(my_hand)
 
     for _ in range(num_simulations):
-        deck = Deck()
-        # Remove cards already in my hand
-        deck.cards = [c for c in deck.cards if not any(
-            c.value == h.value and c.suit == h.suit for h in my_hand)]
-        deck.shuffle()
-
-        opp_hand = [deck.deal_card(), deck.deal_card()]
-
-        root_state = Poker(my_hand, opp_hand)
-        root_node = Node(root_state)
-
-        node = root_node
-
+        node = root
+        
         while not node.is_terminal():
-            if not node.full_expaned():
-                node = node.expand()
+            if len(node.sampled) < 1000:
+                child = node.expand()
+                if child is None:
+                    break
+                node.children.append(child)
+                result = child.rollout()
+                child.backpropagate(result)
                 break
             else:
-                node = node.selection()
-        result = node.rollout()
-        node.backpropagate(result)
-        win_count += result
-
-    return win_count / num_simulations
+                node = node.select()
+    return root.wins / root.visits if root.visits > 0 else 0
 
 if __name__ == "__main__":
     deck = Deck()
     deck.shuffle()
-    my_hand = [deck.deal_card(), deck.deal_card()]
+    my_hand = [deck.deal_card(1)[0], deck.deal_card(1)[0]]
+    print("My Hand:", my_hand[0], "and", my_hand[1])
 
-    print("My Hand:")
-    for card in my_hand:
-        print(card)
-
-    board_card = [deck.deal_card(), deck.deal_card(), deck.deal_card(), deck.deal_card(), deck.deal_card()]
-    print("Board Cards:")
-    for card in board_card:
-        print(card)
-
-    my_score = hand_strength(my_hand + board_card)
-    print(my_score)
-
-    # win_prob = mcts(my_hand, num_simulations=1000)
-    # print(f"\nEstimated Win Probability: {win_prob:.2%}")
+    est_prob = mcts(my_hand, num_simulations=1000)
+    print(f"Estimated win probability: {est_prob:.2%}")
